@@ -453,6 +453,12 @@ def complete_postprocess(input_dist, qubits, check_count, pr_list):
         output_dict = single_side_postprocess(output_dict, right_checks = pr_list[i], qubits = qubits, layer_index = i)
     return output_dict   
 
+def rightchecks_postprocess(input_dist, qubits, check_count, pr_list):
+    output_dict = input_dist
+    for i in range(0, check_count):
+        output_dict = single_side_postprocess(output_dict, right_checks = pr_list[i], qubits = qubits, layer_index = i)
+    return output_dict   
+
 
 
 #compose have problem for inplace measurements, because one qubit can't be measured by two classical bits
