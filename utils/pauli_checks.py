@@ -304,7 +304,7 @@ def verify_circuit_with_pauli_checks(circuit, left_check, right_check):
 #     return check_circuit
 
 
-def add_pauli_checks(circuit, left_check, right_check, initial_layout, final_layout, pauli_meas = False, single_side = False, qubit_measure = False, ancilla_measure = False, barriers = False):
+def add_pauli_checks(circuit, left_check, right_check, initial_layout, final_layout, pauli_meas = False, single_side = False, qubit_measure = False, ancilla_measure = False, barriers = False, increase_size = 0):
     #initial_layout: mapping from original circuit index to the physical qubit index
     #final_layout: mapping from original circuit index to the final physical qubit index
     if initial_layout is None:
@@ -314,11 +314,16 @@ def add_pauli_checks(circuit, left_check, right_check, initial_layout, final_lay
         verification_circuit, equal = verify_circuit_with_pauli_checks(circuit, left_check, right_check)
         assert(equal)
     ancilla_index = len(circuit.qubits)
+    if increase_size > 0:
+        ancilla_index = len(circuit.qubits) - increase_size
     if pauli_meas is False:
 #         check_circuit = QuantumCircuit(ancilla_index)
 #         append_meas_paulis_to_circuit(check_circuit, left_check, initial_layout)
 #     else:
-        check_circuit = QuantumCircuit(ancilla_index + 1)
+        if increase_size > 0:
+            check_circuit = QuantumCircuit(len(circuit.qubits))
+        else:
+            check_circuit = QuantumCircuit(ancilla_index + 1)
         check_circuit.h(ancilla_index)
         append_control_paulis_to_circuit(check_circuit, left_check, ancilla_index, initial_layout)
     if barriers is True:
@@ -914,3 +919,29 @@ def filter_results(dictionary, qubits, indexes, sign_list):
         if new_key != '':
             new_dict[new_key] = dictionary[key]
     return new_dict
+
+def pauli_strings_commute(pauli_str1, pauli_str2):
+    """
+    Determine if two Pauli strings commute.
+    
+    :param pauli_str1: A string representing the first Pauli operator.
+    :param pauli_str2: A string representing the second Pauli operator.
+    :return: True if the Pauli strings commute, False otherwise.
+    """
+    if len(pauli_str1) != len(pauli_str2):
+        raise ValueError("Pauli strings must be of the same length.")
+    
+    commute = True  # Assume they commute until proven otherwise
+    
+    anticommute_count = 0
+    
+    for i in range(len(pauli_str1)):
+        if pauli_str1[i] != pauli_str2[i] and pauli_str1[i] != 'I' and pauli_str2[i] != 'I':
+            # Found anti-commuting Pauli matrices
+            commute = False
+            anticommute_count += 1
+
+    if anticommute_count % 2 == 0:
+        commute = True
+    
+    return commute
