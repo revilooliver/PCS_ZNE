@@ -145,7 +145,7 @@ class ChecksFinder:
 
     def handle_operator_node(self, node, temp_check_reversed: TempCheckOperator):
         '''Handles operations for nodes of type "op".'''
-        current_qubits = self.get_current_qubits(node)
+        current_qubits = self.get_current_qubits(self, node)
         current_ops = [temp_check_reversed.operations[qubit] for qubit in current_qubits]
         node_op = node.name.upper()
         self.update_current_ops(current_ops, node_op, temp_check_reversed, current_qubits)
@@ -211,14 +211,28 @@ class ChecksFinder:
         operations.insert(0, phase_str)
         return "".join(operations)
     
+#     @staticmethod
+#     def get_current_qubits(node):
+#         '''Finding checks: Symbolic: get the current qubits whose operations that will be passed through.'''
+#         # We have to check for single or two qubit gates.
+#         if node.name in ["x", "y", "z", "h", "s", "sdg", "rz"]:
+#             return [node.qargs[0].index]
+#         elif node.name in ["cx", "swap"]:
+#             return [node.qargs[0].index, node.qargs[1].index]
+#         else:
+#             assert False, "Overlooked a node operation."
+            
+    # Use for new qiskit version (Qiskit verions >= 1.0)
     @staticmethod
-    def get_current_qubits(node):
+    def get_current_qubits(self, node):
         '''Finding checks: Symbolic: get the current qubits whose operations that will be passed through.'''
+        circ_dag = circuit_to_dag(self.circ_reversed)
+        dag_qubit_map = {bit: index for index, bit in enumerate(circ_dag.qubits)}
         # We have to check for single or two qubit gates.
         if node.name in ["x", "y", "z", "h", "s", "sdg", "rz"]:
-            return [node.qargs[0].index]
+            return [dag_qubit_map[node.qargs[0]]]
         elif node.name in ["cx", "swap"]:
-            return [node.qargs[0].index, node.qargs[1].index]
+            return [dag_qubit_map[node.qargs[0]], dag_qubit_map[node.qargs[1]]]
         else:
             assert False, "Overlooked a node operation."
             
@@ -363,7 +377,8 @@ class IdentifyOutputMapping(AnalysisPass):
         """
         self.property_set["output_mapping"] = defaultdict()
         for node in dag.topological_nodes():
-            if isinstance(node, DAGOpNode) and node.name is 'measure':
+            # if isinstance(node, DAGOpNode) and node.name is 'measure':
+            if isinstance(node, DAGOpNode) and node.name == 'measure':
                 #print(node.qargs, node.cargs)
                 self.property_set["output_mapping"][node.cargs[0].index] = node.qargs[0]
 #         return self.property_set["remote_gates"]
