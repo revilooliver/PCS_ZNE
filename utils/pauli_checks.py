@@ -229,7 +229,8 @@ class ChecksFinder:
         circ_dag = circuit_to_dag(self.circ_reversed)
         dag_qubit_map = {bit: index for index, bit in enumerate(circ_dag.qubits)}
         # We have to check for single or two qubit gates.
-        if node.name in ["x", "y", "z", "h", "s", "sdg", "rz"]:
+        # print("node.name:", node.name)
+        if node.name in ["x", "y", "z", "h", "s", "sdg", "rz", "rx"]:
             return [dag_qubit_map[node.qargs[0]]]
         elif node.name in ["cx", "swap"]:
             return [dag_qubit_map[node.qargs[0]], dag_qubit_map[node.qargs[1]]]
@@ -925,7 +926,7 @@ def filter_results(dictionary, qubits, indexes, sign_list):
 #             print(i, meas_index)
 #             print(meas_index in indexes)
             if meas_index in indexes and key[i] == sign_list[meas_index]:
-                #the key equals the sign
+                # the key equals the sign
 #                 print("not found")
                 new_key = ''
                 break
@@ -960,3 +961,136 @@ def pauli_strings_commute(pauli_str1, pauli_str2):
         commute = True
     
     return commute
+
+
+##############
+# New utils
+##############
+
+def convert_to_PCS_circ(circ, num_qubits, num_checks, barriers=False, reverse=False, only_Z_checks=False):
+    if only_Z_checks:
+        characters = ["I", "Z"]
+    else:
+        characters = ["I", "X", "Z"]
+
+    strings = [
+        "".join(p)
+        for p in itertools.product(characters, repeat=num_qubits)
+        if not all(c == "I" for c in p)
+    ]
+
+    def weight(pauli_string):
+        return sum(1 for char in pauli_string if char != "I")
+
+    sorted_strings = sorted(strings, key=weight)
+    if reverse:
+        sorted_strings.reverse()
+
+    test_finder = ChecksFinder(num_qubits, circ)
+    p1_list = []
+    found_checks = 0  # Counter for successful checks found
+
+    if only_even_q:
+        even_strings = []
+        for i, s in enumerate(sorted_strings):
+            if i % 2 == 0:
+                even_strings.append(s)
+
+        sorted_strings = even_strings
+
+    for string in sorted_strings:
+        string_list = list(string)
+        print("trying ", string_list)
+        try:
+            result = test_finder.find_checks_sym(pauli_group_elem=string_list)
+            p1_list.append([result.p1_str, result.p2_str])
+            found_checks += 1
+            print(f"Found check {found_checks}: {result.p1_str}, {result.p2_str}")
+            if found_checks >= num_checks:
+                print("Required number of checks found.")
+                print("p1_list = ", p1_list)
+                break  # Stop the loop if we have found enough checks
+        except Exception as e:
+            continue  # Skip to the next iteration if an error occurs
+
+    if found_checks < num_checks:
+        print("Warning: Less checks found than required.")
+
+    initial_layout = {}
+    for i in range(0, num_qubits):
+        initial_layout[i] = [i]
+
+    final_layout = {}
+    for i in range(0, num_qubits):
+        final_layout[i] = [i]
+
+    # add pauli check on two sides:
+    # specify the left and right pauli strings
+    pcs_qc_list = []
+    sign_list = []
+    pl_list = []
+    pr_list = []
+
+    for i in range(0, num_checks):
+        pl = p1_list[i][0][2:]
+        pr = p1_list[i][1][2:]
+        if i == 0:
+            temp_qc = add_pauli_checks(
+                circ,
+                pl,
+                pr,
+                initial_layout,
+                final_layout,
+                False,
+                False,
+                False,
+                False,
+                barriers,
+            )
+            save_qc = add_pauli_checks(
+                circ,
+                pl,
+                pr,
+                initial_layout,
+                final_layout,
+                False,
+                False,
+                False,
+                False,
+                barriers,
+            )
+            prev_qc = temp_qc
+        else:
+            temp_qc = add_pauli_checks(
+                prev_qc,
+                pl,
+                pr,
+                initial_layout,
+                final_layout,
+                False,
+                False,
+                False,
+                False,
+                barriers,
+            )
+            save_qc = add_pauli_checks(
+                prev_qc,
+                pl,
+                pr,
+                initial_layout,
+                final_layout,
+                False,
+                False,
+                False,
+                False,
+                barriers,
+            )
+            prev_qc = temp_qc
+        pl_list.append(pl)
+        pr_list.append(pr)
+        sign_list.append(p1_list[i][0][:2])
+        pcs_qc_list.append(save_qc)
+
+    qc = pcs_qc_list[-1]  # return circuit with 'num_checks' implemented
+
+    return sign_list, qc
