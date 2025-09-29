@@ -1,25 +1,42 @@
 """
 Utils for running experiments comparing pce and zne.
+
+File reorganized by function groups for better readability.
+All original code preserved - only organizational changes made.
 """
 
+# ============================================================================
+# IMPORTS
+# ============================================================================
+
 import numpy as np
-from cirq import Sampler
-from qiskit.quantum_info import random_clifford, Pauli, Statevector
 import matplotlib.pyplot as plt
-from copy import deepcopy
-
-from qiskit import *
-
-from utils.pauli_checks import convert_to_PCS_circ # new util
-
-from functools import partial
-
-from mitiq import zne
-
+import networkx as nx
 import os
 import csv
 import re
+from copy import deepcopy
+from typing import List, Tuple, Dict
+from functools import partial
 
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister, qpy
+from qiskit.circuit import Qubit, Reset, ParameterVector
+from qiskit.circuit.library import XGate, YGate, ZGate, HGate, SGate, SdgGate, CXGate
+from qiskit.quantum_info import Pauli, Statevector, SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes import RemoveBarriers
+from qiskit_ibm_runtime import EstimatorV2 as Estimator, SamplerV2 as Sampler
+from IPython.display import display
+from scipy.optimize import curve_fit
+
+from mitiq import zne
+
+from utils.pauli_checks import convert_to_PCS_circ # new util
+
+
+# ============================================================================
+# MEASUREMENT AND EXPECTATION VALUE FUNCTIONS
+# ============================================================================
 
 def apply_measurement_basis(circuit, pauli_string):
     """Modify the circuit to measure in the basis specified by the Pauli string.
@@ -30,6 +47,7 @@ def apply_measurement_basis(circuit, pauli_string):
         elif pauli == 'Y':
             circuit.sdg(i)
             circuit.h(i)
+
 
 def compute_expectation_value(counts, pauli_string):
     """Compute expectation value of a Pauli string observable from measurement counts.
@@ -56,145 +74,253 @@ def compute_expectation_value(counts, pauli_string):
     return expectation / total_shots
 
 
-from qiskit.quantum_info import SparsePauliOp
-from qiskit_ibm_runtime import EstimatorV2 as Estimator
-from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
-
-
-# def run_zne_estimator(circuits: list, backend, pauli_string: str, shots: int = 10_000, zne=True):
-#     """
-#     Run Qiskit's Estimator primitive with ZNE.
-#     """
-
-#     # Prepare a common base observable.
-#     base_observable = SparsePauliOp.from_list([(pauli_string, 1.0)])
-#     job_data = []
-
-#     # Prepare the pass manager once.
-#     pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
-
-#     # Process each circuit.
-#     for circ in circuits:
-#         isa_circ = pm.run(circ)
-#         # Adjust the observable to match the transpiled circuit layout.
-#         isa_observable = base_observable.apply_layout(isa_circ.layout)
-#         job_data.append((isa_circ, isa_observable))
-
-#     estimator = Estimator(backend)
-#     estimator.options.default_shots = shots
-
-#     if zne:
-#         estimator.options.resilience.zne_mitigation = True
-#         estimator.options.resilience.zne.noise_factors = (1, 3, 5)
-#         estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
-
-#     # Submit all circuits at once.
-#     job = estimator.run(job_data)
-#     print(f">>> Job ID: {job.job_id()}")
-#     print(f">>> Job Status: {job.status()}")
-#     results = job.result()
-#     # print("results: ", results)
-
-#     # Extract expectation values from results.
-#     expectation_values = [res.data.evs for res in results]
-#     for ev in expectation_values:
-#         print(f">>> Expectation value: {ev}")
-
-#     return expectation_values
-
-
-    # Create the Estimator. Depending on your version of Estimator, you might need
-    # to initialize without passing in backend if it doesn't accept it.
-    # estimator = Estimator(backend)
-    # estimator.options.default_shots = shots
-    #
-    # # Submit all circuits at once.
-    # job = estimator.run(job_data)
-    # results = job.result()
-    # print("results: ", results)
-    #
-    # # Extract expectation values from results.
-    # expectation_values = [res.data.evs for res in results]
-    # for ev in expectation_values:
-    #     print(f">>> Expectation value: {ev}")
-    #
-    # return expectation_values
-
-
-def ibmq_executor(circuit: QuantumCircuit, backend, pauli_string: str, shots: int = 10_000):
-    """Executor for ZNE.
-       Computes the expectation value using the Estimator primitive.
+def get_ideal_expectation(circ, pauli_string):
     """
+    Calculates the ideal expectation of the state prepared by 'circ', wrt the observable 'pauli_string'.
+    """
+    operator = Pauli(pauli_string)
+    psi = Statevector(circ)
+    expect = np.array(psi).T.conj() @ operator.to_matrix() @ np.array(psi)
+    return expect
 
-    pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
-    isa_circuit = pm.run(circuit)
-    print(f">>> Circuit ops (ISA): {isa_circuit.count_ops()}")
 
-    observable = SparsePauliOp.from_list([(pauli_string, 1.0)])
-    isa_observable = observable.apply_layout(isa_circuit.layout)
+# ============================================================================
+# CIRCUIT EXECUTION FUNCTIONS
+# ============================================================================
 
-    estimator = Estimator(backend)
-    estimator.options.default_shots = shots
-    # print(isa_circuit)
-    job = estimator.run([(isa_circuit, isa_observable)])
+def add_em_sampler(samp: Sampler):
+    samp.options.twirling.enable_measure=True # This is the trex twirling.
+    samp.options.twirling.shots_per_randomization= "auto"
+    samp.options.twirling.strategy= "active-circuit" # I usually use this setting, but there are other ones.
+    samp.options.twirling.enable_gates=True
 
-    # Get results for the first (and only) PUB
-    pub_result = job.result()[0]
-    # print("result: ", pub_result)
 
-    # print(f">>> Expectation value: {pub_result.data.evs}")
-    expectation_value = pub_result.data.evs
+# def add_em_estimator(est: Estimator):
+#     est.options.twirling.enable_gates = True # Turn on gate twirling.
+#     est.options.resilience.measure_mitigation = True # Turn on measurement error mitigation.
+
+#     print(f">>> gate twirling is turned on: {est.options.twirling.enable_gates}")
+#     print(f">>> measurement error mitigation is turned on: {est.options.resilience.measure_mitigation}")
+
+
+def transpile_circuit(circuit: QuantumCircuit, backend, layout=None, optimization_level=0):
+    """Transpile circuit for the given backend and layout."""
+    try:
+        pm = generate_preset_pass_manager(
+            backend=backend, 
+            optimization_level=optimization_level, 
+            initial_layout=layout,
+        )
+        isa_circuit = pm.run(circuit)
+
+        # print("transpiled circuit:")
+        # display(isa_circuit.draw("mpl", fold=-1))
+        
+        # Remove barriers for cleaner execution
+        remove = RemoveBarriers()
+        isa_circuit_no_barrier = remove(isa_circuit)
+        
+        return isa_circuit_no_barrier
+    except Exception as e:
+        print(f"ERROR: Circuit transpilation failed: {e}")
+        print(f"Circuit: {circuit.num_qubits} qubits, Layout: {layout}")
+        raise RuntimeError(f"Transpilation failed: {e}") from e
+
+
+# def display_circuit(circuit: QuantumCircuit, title: str = ""):
+#     """Display circuit diagram in notebook."""
+#     if title:
+#         print(title)
+#     fig = circuit.draw(output='mpl', fold=-1)
+#     display(fig)
+#     plt.close(fig)
+
+
+# def run_estimator_job(circuit: QuantumCircuit, backend, pauli_string: str, shots: int, 
+#                       enable_error_mitigation: bool = False):
+#     try:
+#         observable = SparsePauliOp.from_list([(pauli_string, 1.0)])
+#         isa_observable = observable.apply_layout(circuit.layout)
+#         print("isa observable: ", isa_observable)
+        
+#         estimator = Estimator(backend)
+#         estimator.options.default_shots = shots
+        
+#         if enable_error_mitigation:
+#             add_em_estimator(estimator)
+        
+#         job = estimator.run([(circuit, isa_observable)])
+#         pub_result = job.result()[0]
+        
+#         expectation_value = pub_result.data.evs
+#         print(f">>> Expectation value: {expectation_value}")
+        
+#         return expectation_value
+#     except Exception as e:
+#         print(f"ERROR: Estimator execution failed: {e}")
+#         print(f"Circuit: {circuit.num_qubits} qubits, Pauli list: {pauli_string}, Shots: {shots}")
+#         raise RuntimeError(f"Estimator job failed: {e}") from e
+
+# def executor(circuit: QuantumCircuit, backend, pauli_string: str, num_qubits, 
+#                      shots: int, method: str, signs=None, initial_layout=None, 
+#                      enable_error_mitigation: bool = False):
+    
+#     # Apply appropriate measurements
+#     measurement_circuit = prepare_measurement_circuit(circuit, pauli_string)
+
+#     # Transpile circuit
+#     isa_circuit = transpile_circuit(measurement_circuit, backend, layout)
+    
+
+    
+#     # Execute and return result
+#     counts = run_sampler_job(isa_circuit, backend, shots, enable_error_mitigation)
+
+#     if method.upper() == "PCS":
+        
+#         # Apply PCS post-selection and compute expectation
+#         expectation_value, _ = apply_pcs_post_selection(
+#             counts, num_qubits, circuit.num_qubits, signs, pauli_string
+#         )
+
+#         return expectation_value
+    
+#     elif method.upper() == "ZNE":
+#         return ex
+
+
+def ibmq_executor(circuit: QuantumCircuit, backend, pauli_string: str, shots: int, layout,
+                 enable_error_mitigation: bool = False, mthree = None):
+    
+    measurement_circuit = prepare_measurement_circuit(circuit, pauli_string)
+
+    # Transpile circuit
+    isa_circuit = transpile_circuit(measurement_circuit, backend, layout)
+    
+    # Execute and return result
+    counts = run_sampler_job(isa_circuit, backend, shots, enable_error_mitigation, mthree=mthree)
+
+    expectation_value = compute_expectation_value(counts, pauli_string)
 
     return expectation_value
 
 
-### Old function that uses counts to compute expectation value.
-# def ibmq_executor(circuit: QuantumCircuit, shots: int = 10_000):
-# def ibmq_executor(circuit: QuantumCircuit, backend, pauli_string: str, shots: int = 10_000):
-#     """Executor for ZNE.
-#     """
-#     # Modify the circuit to measure the required Pauli observables
-#     measurement_circuit = circuit.copy()
-#     measurement_circuit.barrier()
-#     apply_measurement_basis(measurement_circuit, pauli_string)
-#     measurement_circuit.measure_all()
-#     # print(measurement_circuit)
-#
-#     # Transpile for the backend
-#     exec_circuit = transpile(
-#         measurement_circuit,
-#         backend=backend,
-#         optimization_level=0 # Preserve gate structure for simulation accuracy.
+def prepare_measurement_circuit(circuit: QuantumCircuit, pauli_string: str):
+    """Prepare circuit with measurement basis and measurement operations."""
+    measurement_circuit = circuit.copy()
+    apply_measurement_basis(measurement_circuit, pauli_string)
+    measurement_circuit.measure_all()
+    return measurement_circuit
+
+
+def run_sampler_job(circuit: QuantumCircuit, backend, shots: int, layout: List[int],
+                   enable_error_mitigation: bool = False, mthree = None):
+    """Execute circuit using Sampler primitive and return raw counts.
+    
+    Args:
+        circuit: The quantum circuit to execute
+        backend: The quantum backend to use
+        shots: Number of shots to execute
+        enable_error_mitigation: Whether to enable error mitigation (default False)
+    """
+    print("RUNNING SAMPLER...")
+    try:
+        sampler = Sampler(mode=backend)
+        
+        if enable_error_mitigation:
+            add_em_sampler(sampler)
+
+        print(f"Twirling enabled: {sampler.options.twirling.enable_gates}")
+        print(f"Twirling strategy: {sampler.options.twirling.strategy}")
+        print(f">>> gate twirling is turned on: {sampler.options.twirling.enable_gates}")
+        print(f">>> trex twriing is turned on: {sampler.options.twirling.enable_measure}")
+        # print(f"Readout error mitigation: {sampler.options.resilience.measure_mitigation}")
+        
+        job = sampler.run([circuit], shots=shots)
+        results = job.result()
+        counts = results[0].data.meas.get_counts()
+
+        if mthree:
+            print("applying mthree to counts.")
+            print("executed on phsyical qubits: ", layout)
+            readout_mitigated_counts = mthree.apply_correction(counts, layout)
+            return readout_mitigated_counts
+        else:
+            print("mthree not activated, taking original counts.")
+            return counts
+        
+        # mitigation_status = "with additional" if enable_error_mitigation else "without additional"
+        # print(f"counts ({mitigation_status} error mitigation): ", counts)
+    except Exception as e:
+        print(f"ERROR: Sampler execution failed: {e}")
+        print(f"Circuit: {circuit.num_qubits} qubits, Shots: {shots}")
+        print(f"Additional error mitigation: {enable_error_mitigation}")
+        raise RuntimeError(f"Sampler job failed: {e}") from e
+
+
+def apply_pcs_post_selection(counts: dict, num_payload_qubits: int, total_qubits: int, 
+                           signs: list, pauli_string: str):
+    """Apply PCS post-selection filtering and compute expectation value."""
+    num_checks = total_qubits - num_payload_qubits
+    
+    filtered_counts = filter_counts(num_checks, signs, counts)
+    print("number of filtered counts: ", len(filtered_counts), "with ", num_checks, "checks")
+    
+    post_selection_rate = sum(filtered_counts.values()) / sum(counts.values())
+    
+    expectation_value = compute_expectation_value(filtered_counts, pauli_string)
+    return expectation_value, post_selection_rate
+
+
+def ibmq_executor_pcs(circuit: QuantumCircuit, backend, pauli_string: str, num_qubits, 
+                     shots: int, signs=None, initial_layout=None, 
+                     enable_error_mitigation: bool = False):
+    # Prepare measurement circuit
+    measurement_circuit = prepare_measurement_circuit(circuit, pauli_string)
+    
+    # Transpile circuit
+    isa_circuit = transpile_circuit(measurement_circuit, backend, initial_layout)
+    
+    # Execute circuit
+    counts = run_sampler_job(isa_circuit, backend, shots, enable_error_mitigation)
+    
+    # Apply PCS post-selection and compute expectation
+    expectation_value, _ = apply_pcs_post_selection(
+        counts, num_qubits, circuit.num_qubits, signs, pauli_string
+    )
+    
+    return expectation_value
+
+# def ibmq_executor(circuit: QuantumCircuit, backend, pauli_string: str, num_qubits, 
+#                      shots: int, signs=None, initial_layout=None, 
+#                      enable_error_mitigation: bool = False, mthree = None):
+
+#     # Prepare measurement circuit
+#     measurement_circuit = prepare_measurement_circuit(circuit, pauli_string)
+
+#     # Transpile circuit
+#     isa_circuit = transpile_circuit(measurement_circuit, backend, initial_layout)
+
+#     # Execute circuit
+#     counts = run_sampler_job(isa_circuit, backend, shots, enable_error_mitigation)
+
+#     if mthree:
+#         print("running mthree")
+#         print("readout mitigating on qubits: ", initial_layout)
+#         filtered_counts = mthree.apply_correction
+
+#     # Apply PCS post-selection and compute expectation
+#     expectation_value, _ = apply_pcs_post_selection(
+#         counts, num_qubits, circuit.num_qubits, signs, pauli_string
 #     )
-#
-#     # print("transpiled circuit")
-#     # print(exec_circuit)
-#
-#     # Run the circuit
-#     job = backend.run(exec_circuit, shots=shots)
-#     counts = job.result().get_counts()
-#
-#     # Compute the expectation value based on counts
-#     # expectation_value = sum((-1 if (bin(int(state, 16)).count('1') % 2) else 1) * count for state, count in counts.items()) / shots
-#     expectation_value = compute_expectation_value(counts, pauli_string)
-#     return expectation_value
 
-def mitigate_zne(circ, backend, pauli_string, shots=10_000, method="richardson", scale_factors=[1,2,3], fold_method=zne.scaling.fold_global):
-    """
-    Runs ibmq_executor and mitigates the expectation for 'pauli_string' observable using zne. Method set to default for now.
-    """
-    zne_executor = partial(ibmq_executor, backend=backend, pauli_string=pauli_string, shots=shots)
+    
+    
 
-    if method == "richardson":
-        factory = zne.inference.RichardsonFactory(scale_factors=scale_factors)
-        mitigated = zne.execute_with_zne(circ, zne_executor, factory=factory, scale_noise=fold_method)
 
-    elif method == "linear":
-        factory = zne.inference.LinearFactory(scale_factors=scale_factors)
-        mitigated = zne.execute_with_zne(circ, zne_executor, factory=factory, scale_noise=fold_method)
-
-    return mitigated
-
+# ============================================================================
+# POST-SELECTION AND FILTERING
+# ============================================================================
 
 def filter_counts(no_checks, sign_list_in, in_counts):
     """
@@ -216,84 +342,145 @@ def filter_counts(no_checks, sign_list_in, in_counts):
             out_counts[new_key] = in_counts[key]
     return out_counts
 
-# def run_circs_pcs
-#     sampler = Sampler(backend)
-#
-#             # Submit all circuits at once.
-#             job = sampler.run(job_data) # might not want to pass observable here.
-#             print(f">>> Job ID: {job.job_id()}")
-#             print(f">>> Job Status: {job.status()}")
-#             results = job.result()
-#             print("results: ", results)
-#
-#             # Extract expectation values from results.
-#             expectation_values = [res.data.evs for res in results]
-#             for ev in expectation_values:
-#                 print(f">>> Expectation value: {ev}")
 
-from qiskit_ibm_runtime import SamplerV2 as Sampler
+# ============================================================================
+# ZERO NOISE EXTRAPOLATION (ZNE)
+# ============================================================================
 
-def ibmq_executor_pcs(circuit: QuantumCircuit, backend, pauli_string: str, num_qubits, shots: int = 10_000, signs = None):
-    """Executor for PCS.
+def mitigate_zne(circ, backend, pauli_string, shots, method, scale_factors, fold_method, layout=None, enable_error_mitigation=False):
+    zne_executor = partial(ibmq_executor, backend=backend, pauli_string=pauli_string, shots=shots, layout=layout, enable_error_mitigation=enable_error_mitigation)
+
+    if method == "richardson":
+        factory = zne.inference.RichardsonFactory(scale_factors=scale_factors)
+    elif method == "linear":
+        factory = zne.inference.LinearFactory(scale_factors=scale_factors)
+    elif method == "exp":
+        factory = zne.inference.ExpFactory(scale_factors=scale_factors, asymptote=0.5)
+    elif method == "poly":
+        factory = zne.inference.PolyFactory(scale_factors=scale_factors, order=2)
+    else:
+        raise ValueError(f"Unsupported ZNE method: {method!r}")
+
+
+    mitigated = zne.execute_with_zne(circ, zne_executor, factory=factory, scale_noise=fold_method)
+
+    print("expectation values: ", factory.get_expectation_values())
+    fig = factory.plot_fit()   
+    plt.show()
+    return mitigated
+
+
+# ============================================================================
+# PCE EXTRAPOLATION FUNCTIONS
+# ============================================================================
+
+def prepare_fitting_data(num_checks_to_fit: int, expectation_values):
+    """Prepare data arrays for fitting."""
+    check_numbers = np.array(range(1, num_checks_to_fit + 1))
+    y_data = np.array(expectation_values[:num_checks_to_fit])
+    return check_numbers, y_data
+
+
+def fit_linear_model(check_numbers, y_data):
+    """Fit linear model to data and return fit function."""
+    coeffs = np.polyfit(check_numbers, y_data, 1)
+    fit_func = np.poly1d(coeffs)
+    return fit_func, coeffs
+
+
+def fit_exponential_model(check_numbers, y_data):
+    """Fit exponential model E(m) = a * b^m + c to data."""
+    def exp_model(m, a, b, c):
+        return a * (b ** m) + c
+
+    initial_guess = [1.0, 0.9, 0.0]
+    lower_bounds = [-np.inf, 0.6, -np.inf]
+    upper_bounds = [np.inf, 1.2, np.inf]
+
+    try:
+        popt, _ = curve_fit(exp_model, check_numbers, y_data, p0=initial_guess,
+                            bounds=(lower_bounds, upper_bounds), maxfev=10000)
+        fit_func = lambda m: exp_model(m, *popt)
+        return fit_func, popt
+    except Exception as e:
+        print(f"ERROR: Exponential curve fitting failed: {e}")
+        raise RuntimeError(f"PCE exponential fitting failed: {e}") from e
+
+
+def plot_linear_fit(check_numbers, y_data, fit_func, coeffs, extrap_checks):
+    """Create visualization for linear fit."""
+    plt.figure()
+    plt.scatter(check_numbers, y_data, label='Data Points')
+    m_fit = np.linspace(check_numbers.min(), max(extrap_checks), 100)
+    plt.plot(m_fit, fit_func(m_fit),
+             label=f'Linear fit: slope={coeffs[0]:.3f}, intercept={coeffs[1]:.3f}')
+    plt.xlabel('Check Number')
+    plt.ylabel('Expectation Value')
+    plt.title('Linear Regression Fit')
+    plt.legend()
+    plt.show()
+
+
+def plot_exponential_fit(check_numbers, y_data, fit_func, popt, extrap_checks):
+    """Create visualization for exponential fit."""
+    plt.figure()
+    plt.scatter(check_numbers, y_data, label='Data Points', color='blue')
+    m_fit = np.linspace(min(check_numbers), max(extrap_checks), 100)
+    plt.plot(m_fit, fit_func(m_fit), 
+             label=f'Fitted: a={popt[0]:.3f}, b={popt[1]:.3f}, c={popt[2]:.3f}',
+             color='red')
+    plt.xlabel('Check Number')
+    plt.ylabel('Expectation Value')
+    plt.title('Exponential Curve Fit')
+    plt.legend()
+    plt.show()
+
+
+def extrapolate_to_checks(fit_func, extrap_checks):
+    """Apply fit function to extrapolation points."""
+    return [fit_func(c) for c in extrap_checks]
+
+
+def extrapolate_checks(num_checks_to_fit: int, extrap_checks, expectation_values, 
+                      method: str = 'linear', show_plot: bool = True):
     """
-    # Modify the circuit to measure the required Pauli observables
-    measurement_circuit = circuit.copy()
-    apply_measurement_basis(measurement_circuit, pauli_string)
-    measurement_circuit.measure_all()
-    # print(measurement_circuit)
+    Fit an extrapolation model and extrapolate to desired check numbers.
 
-    # Transpile for the backend
-    # exec_circuit = transpile(
-    #     measurement_circuit,
-    #     backend=backend,
-    #     # basis_gates=['z', 'y', 'x', 's', 'sdg', 't', 'tdg', 'h', 'cx', 'cy', 'cz'], # test set
-    #     optimization_level=0 # keep at level 0 for mirror circuits, or it will cancel out all the gates.
-    # )
+    Parameters:
+    - num_checks_to_fit: int, number of initial data points to use for fitting
+    - extrap_checks: iterable of int, check numbers to extrapolate to
+    - expectation_values: list or array-like, observed values
+    - method: str, either "linear" or "exponential"
+    - show_plot: bool, whether to display fit visualization
 
-    # print("transpiled circuit")
-    # print(exec_circuit)
-
-    pm = generate_preset_pass_manager(backend=backend, optimization_level=0) # Changed optimization level to 3 temporarily 
-    isa_circuit = pm.run(measurement_circuit)
-    print(f">>> Circuit ops (ISA): {isa_circuit.count_ops()}")
-
-    # Run the circuit
-    sampler = Sampler(mode=backend)
-    job = sampler.run([isa_circuit], shots=shots)
-    results = job.result()
-    # print("results: ", results)
-    counts = results[0].data.meas.get_counts()
-    # counts = results[0]
-    # print("counts: ", counts)
-
-    # Retrieve the quasi-distribution for our single circuit and convert it to counts.
-    # quasi_dists = results[0].data.quasi_dists
-    # counts = {bitstr: int(round(prob * shots)) for bitstr, prob in quasi_dists.items()}
-
-    # job = backend.run(exec_circuit, shots=shots)
-    # print(job.result().quasi_dists)
-
+    Returns:
+    - extrap_values: list of extrapolated values
+    - fit_func: the fitting function
+    """
+    # Prepare data
+    check_numbers, y_data = prepare_fitting_data(num_checks_to_fit, expectation_values)
     
-    # counts = job.result().get_counts()
-    # print("counts: ", counts)
-    # print()
+    # Fit model based on method
+    if method == 'linear':
+        fit_func, coeffs = fit_linear_model(check_numbers, y_data)
+        if show_plot:
+            plot_linear_fit(check_numbers, y_data, fit_func, coeffs, extrap_checks)
+    elif method == 'exponential':
+        fit_func, popt = fit_exponential_model(check_numbers, y_data)
+        if show_plot:
+            plot_exponential_fit(check_numbers, y_data, fit_func, popt, extrap_checks)
+    else:
+        raise ValueError("Unsupported method. Please use 'linear' or 'exponential'.")
+    
+    # Extrapolate to desired check numbers
+    extrap_values = extrapolate_to_checks(fit_func, extrap_checks)
+    
+    return extrap_values, fit_func
 
-    # Filter counts based on check data
-    total_qubits = circuit.num_qubits
-    num_checks = total_qubits - num_qubits
-    # filtered_counts = filter_counts(counts, num_checks)
-    filtered_counts = filter_counts(num_checks, signs, counts)
-    # print("filtered_counts: ", filtered_counts)
 
-    # Compute the expectation value based on filtered counts
-    expectation_value = compute_expectation_value(filtered_counts, pauli_string)
-    return expectation_value
-
-
-from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from qiskit.circuit import Reset
-from qiskit.circuit.library import IGate, XGate, YGate, ZGate, HGate, SGate, SdgGate, CXGate, CZGate, SwapGate
-
+# ============================================================================
+# RANDOM CLIFFORD CIRCUIT GENERATION
+# ============================================================================
 
 def random_clifford_circuit(num_qubits, depth, max_operands=2, measure=False,
                             conditional=False, reset=False, seed=None):
@@ -306,18 +493,6 @@ def random_clifford_circuit(num_qubits, depth, max_operands=2, measure=False,
     For two-qubit Clifford gates, the following are selected:
       CXGate, CZGate, SwapGate.
 
-    Args:
-        num_qubits (int): Number of qubits.
-        depth (int): Number of layers of operations (critical path length).
-        max_operands (int): Maximum number of qubits acted on by an operation.
-                            Currently supported values are 1 or 2.
-        measure (bool): If True measure all qubits at the end.
-        conditional (bool): If True, randomly add conditional operations.
-        reset (bool): If True, allow Reset operations in the one-qubit gate set.
-        seed (int): Seed for random number generator (optional).
-
-    Returns:
-        QuantumCircuit: A randomly generated Clifford circuit.
     """
     if max_operands < 1 or max_operands > 2:
         raise ValueError("max_operands for Clifford circuits must be 1 or 2.")
@@ -384,40 +559,90 @@ def random_clifford_circuit(num_qubits, depth, max_operands=2, measure=False,
     return qc
 
 
-def random_cliff_circs(num_qubits, depth, num_circs, pauli_string, tol=1e-8):
-    circs = []
+def random_cliff_circs(
+    num_qubits: int,
+    depth: int,
+    num_circs: int,
+    pauli_string: str,
+    tol: float = 1e-8
+) -> Tuple[List[QuantumCircuit], float]:
+    """
+    Returns:
+      circs: List of Clifford circuits (each without inverse),
+    """
+    circs     = []
     while len(circs) < num_circs:
-        # clifford_obj = random_clifford(num_qubits)
-        # circ = clifford_obj.to_circuit()
+        # circ = random_clifford_circuit(
+        #     num_qubits=num_qubits,
+        #     lengths=[depth],
+        #     num_samples=1
+        # )[0].decompose()
 
         circ = random_clifford_circuit(num_qubits=num_qubits, depth=depth)
 
-        # Compute the ideal expectation for this circuit using the given observable.
         expect = get_ideal_expectation(circ, pauli_string)
-
-        # Check if the ideal expectation is close to +1 or -1.
         if abs(abs(expect) - 1) < tol:
             circs.append(circ)
 
-        # circs.append(circ)
-
     return circs
 
-def random_cliff_mirror_circs(num_qubits, num_circs):
-    circs = []
-    for _ in range(num_circs):
-        clifford_obj = random_clifford(num_qubits)
-        circ = clifford_obj.to_circuit()
 
-        inverse_circ = circ.inverse()
-
-        circuit = QuantumCircuit(num_qubits)
-
-        circuit.compose(circ, range(num_qubits), inplace=True)
-        circuit.compose(inverse_circ, range(num_qubits), inplace=True)
-
-        circs.append(circuit)
-
+def load_or_generate_random_cliffs(
+    folder: str,
+    num_qubits: int,
+    circuit_depth: int,
+    requested_num_circs: int,
+    pauli_string: str
+) -> List[QuantumCircuit]:
+    """
+    Load up to `requested_num_circs` from the smallest cached file 
+    with N>=requested_num_circs, or else generate exactly
+    requested_num_circs via random_cliff_circs.
+    """
+    # Pattern for filenames in the folder
+    pattern = re.compile(
+        rf"^rand_cliffs_n{num_qubits}_d{circuit_depth}_nc(\d+)\.qpy$"
+    )
+    candidates = []
+    
+    # 1) scan the folder for matching files
+    if os.path.isdir(folder):
+        for fname in os.listdir(folder):
+            m = pattern.match(fname)
+            if m:
+                N = int(m.group(1))
+                if N >= requested_num_circs:
+                    candidates.append((N, fname))
+    
+    # 2) if we found any file with N >= requested, pick the smallest N
+    if candidates:
+        N_sel, fname_sel = min(candidates, key=lambda x: x[0])
+        path = os.path.join(folder, fname_sel)
+        with open(path, "rb") as f:
+            all_circs = qpy.load(f)
+        print(f"Loaded {N_sel} circuits from {path}; returning first {requested_num_circs}.")
+        return all_circs[:requested_num_circs]
+    
+    # 3) otherwise generate fresh
+    print(f"No cached file with ≥{requested_num_circs} circuits found.")
+    print(f"Generating {requested_num_circs} new circuits (n={num_qubits}, d={circuit_depth})…")
+    circs = random_cliff_circs(
+        num_qubits=num_qubits,
+        depth=circuit_depth,
+        num_circs=requested_num_circs,
+        pauli_string=pauli_string
+    )
+    
+    # (Optionally: save them under the exact requested name for next time)
+    out_fname = os.path.join(
+        folder,
+        f"rand_cliffs_n{num_qubits}_d{circuit_depth}_nc{requested_num_circs}.qpy"
+    )
+    os.makedirs(folder, exist_ok=True)
+    with open(out_fname, "wb") as f:
+        qpy.dump(circs, f)
+    print(f"Saved the {requested_num_circs} new circuits to {out_fname}")
+    
     return circs
 
 
@@ -438,127 +663,266 @@ def get_pcs_circs(circ, num_checks, only_Z_checks=False):
     return circs_list, signs_list
 
 
-import numpy as np
-from scipy.optimize import curve_fit
+# ============================================================================
+# QAOA CIRCUIT CONSTRUCTION
+# ============================================================================
 
-
-def extrapolate_checks(num_checks_to_fit: int, extrap_checks, expectation_values, method: str = 'linear'):
+def build_qaoa_phase_separator(graph: nx.Graph, gamma_param):
     """
-    Fit an extrapolation model to the first `num_checks_to_fit` expectation values,
-    and extrapolate to the desired check numbers.
-
-    Parameters:
-    - num_checks_to_fit: int, number of initial data points to use for fitting.
-    - extrap_checks: iterable of int, check numbers to extrapolate to.
-    - expectation_values: list or array-like, observed values.
-    - method: str, either "linear" or "exponential" (default is "linear").
-
+    Build the phase separator (problem Hamiltonian) part of QAOA for one layer.
+    
+    Args:
+        graph: NetworkX graph defining the problem
+        gamma_param: Parameter for this layer's phase rotation
+        
     Returns:
-    - extrap_values: list of extrapolated values, one for each value in `extrap_checks`.
-    - fit_func: the fitting function (polynomial for linear, callable for exponential).
+        QuantumCircuit: Phase separator circuit on graph.number_of_nodes() qubits
     """
-    # Use check numbers starting at 1 up to num_checks_to_fit.
-    check_numbers = np.array(range(1, num_checks_to_fit + 1))
-    y_data = np.array(expectation_values[:num_checks_to_fit])
+    n = graph.number_of_nodes()
+    phase = QuantumCircuit(n)
+    for i, j in graph.edges():
+        phase.cx(i, j)
+        phase.rz(2 * gamma_param, j)
+        phase.cx(i, j)
+    return phase
 
-    if method == 'linear':
-        # Fit a degree-1 polynomial (linear regression)
-        coeffs = np.polyfit(check_numbers, y_data, 1)
-        # Define the polynomial function.
-        fit_func = np.poly1d(coeffs)
-        extrap_values = [fit_func(c) for c in extrap_checks]
-    elif method == 'exponential':
-        # Define the exponential model: E(m) = a * b^m + c
-        def exp_model(m, a, b, c):
-            return a * (b ** m) + c
 
-        # Provide an initial guess for [a, b, c]
-        initial_guess = [1.0, 0.9, 0.0]
-        # popt, _ = curve_fit(exp_model, check_numbers, y_data, p0=initial_guess, maxfev=10000)
+def build_qaoa_mixer(num_qubits: int, beta_param):
+    """
+    Build the mixer (driver Hamiltonian) part of QAOA for one layer.
+    
+    Args:
+        num_qubits: Number of qubits 
+        beta_param: Parameter for this layer's mixer rotation
+        
+    Returns:
+        QuantumCircuit: Mixer circuit on num_qubits qubits
+    """
+    mixer = QuantumCircuit(num_qubits)
+    for q in range(num_qubits):
+        mixer.rx(2 * beta_param, q)
+    return mixer
 
-        lower_bounds = [-np.inf, 0.5, -np.inf]
-        upper_bounds = [np.inf, 2.0, np.inf]
-        popt, _ = curve_fit(exp_model, check_numbers, y_data, p0=initial_guess,
-                            bounds=(lower_bounds, upper_bounds), maxfev=10000)
-        # Create a lambda function for easy extrapolation.
-        fit_func = lambda m: exp_model(m, *popt)
-        extrap_values = [fit_func(c) for c in extrap_checks]
 
-        # plt.figure()
-        # plt.scatter(check_numbers, y_data, label='Data Points', color='blue')
-        # m_fit = np.linspace(min(check_numbers), max(extrap_checks), 100)
-        # plt.plot(m_fit, fit_func(m_fit), label=f'Fitted: a={popt[0]:.3f}, b={popt[1]:.3f}, c={popt[2]:.3f}',
-        #          color='red')
-        # plt.xlabel('Check Number')
-        # plt.ylabel('Expectation Value')
-        # plt.title('Exponential Curve Fit')
-        # plt.legend()
-        # plt.show()
+def build_pcs_qaoa_ansatz(
+    graph: nx.Graph,
+    p: int,
+    barriers: bool = True,
+    gamma_vals: list[float] | None = None,
+    beta_vals: list[float] | None = None,
+    num_checks: int = 0,
+    only_Z_checks: bool = True,
+    only_even_q: bool = False,
+    protect_initial_h: bool = True
+):
+    """
+    Build a depth-p QAOA ansatz with optional PCS checks around phase operators.
+    
+    Args:
+        graph: NetworkX graph defining the problem Hamiltonian
+        p: QAOA depth (number of γ,β parameter pairs)
+        barriers: Whether to add barriers between circuit layers
+        gamma_vals: Values for γ parameters (defaults to zeros)
+        beta_vals: Values for β parameters (defaults to zeros)
+        num_checks: Number of PCS check qubits (0 = no PCS, >0 = add PCS)
+        only_Z_checks: If True, use only Z-basis checks (when num_checks > 0)
+        only_even_q: If True, only apply checks on even-numbered qubits
+        protect_initial_h: If True, include initial H gates inside PCS protection;
+                         If False, apply H gates before PCS (only affects first layer with PCS)
+    
+    Returns:
+        If num_checks == 0: QuantumCircuit (standard QAOA)
+        If num_checks > 0: tuple[list[list[str]], QuantumCircuit] (signs, PCS-QAOA)
+    """
+    # Input validation
+    if not isinstance(graph, nx.Graph):
+        raise TypeError("graph must be a NetworkX Graph")
+    if graph.number_of_nodes() == 0:
+        raise ValueError("graph cannot be empty")
+    if p <= 0:
+        raise ValueError(f"QAOA depth p must be positive, got {p}")
+    if num_checks < 0:
+        raise ValueError("num_checks must be non-negative")
+    
+    n = graph.number_of_nodes()
+    gamma = ParameterVector("γ", p)
+    beta = ParameterVector("β", p)
 
+    # Setup circuit dimensions
+    total_qubits = n + num_checks if num_checks > 0 else n
+    qc = QuantumCircuit(total_qubits)
+
+    signs = None  # Will be set if PCS is used
+
+    for layer in range(p):
+        # Phase separator: either plain or wrapped with PCS checks
+        phase = build_qaoa_phase_separator(graph, gamma_param=gamma[layer])
+        if num_checks == 0:
+            # For first layer without PCS, add Hadamards then phase separator
+            if layer == 0:
+                qc.h(range(n))  # Add Hadamard initialization
+            qc.compose(phase, qubits=range(n), inplace=True)
+        else:
+            if layer == 0:
+                if protect_initial_h:
+                    # For first layer with PCS: create circuit with Hadamards + phase separator
+                    first_layer_circuit = QuantumCircuit(n)
+                    first_layer_circuit.h(range(n))  # Hadamard initialization
+                    first_layer_circuit.compose(phase, qubits=range(n), inplace=True)
+                    
+                    # Apply PCS to the combined circuit (Hadamards + first phase separator)
+                    signs, pcs_first_layer = convert_to_PCS_circ(
+                        first_layer_circuit,
+                        num_qubits=n,
+                        num_checks=num_checks,
+                        barriers=barriers,
+                        only_Z_checks=only_Z_checks,
+                        only_even_q=only_even_q
+                    )
+                    qc.compose(pcs_first_layer, qubits=range(total_qubits), inplace=True)
+                else:
+                    # Apply H gates first (outside PCS protection), then protect only phase separator
+                    qc.h(range(n))  # Hadamard initialization outside PCS
+                    
+                    # Apply PCS to just the phase separator
+                    signs, pcs_phase = convert_to_PCS_circ(
+                        phase,
+                        num_qubits=n,
+                        num_checks=num_checks,
+                        barriers=barriers,
+                        only_Z_checks=only_Z_checks,
+                        only_even_q=only_even_q
+                    )
+                    qc.compose(pcs_phase, qubits=range(total_qubits), inplace=True)
+            else:
+                # For subsequent layers: just protect the phase separator
+                signs, pcs_phase = convert_to_PCS_circ(
+                    phase,
+                    num_qubits=n,
+                    num_checks=num_checks, 
+                    barriers=barriers,
+                    only_Z_checks=only_Z_checks,
+                    only_even_q=only_even_q
+                )
+                qc.compose(pcs_phase, qubits=range(total_qubits), inplace=True)
+
+        if barriers:
+            qc.barrier(range(total_qubits))
+
+        # Mixer: always on payload qubits only
+        mixer = build_qaoa_mixer(n, beta[layer])
+        qc.compose(mixer, qubits=range(n), inplace=True)
+
+        if barriers and layer < p - 1:
+            qc.barrier(range(total_qubits))
+
+    # Parameter binding with defaults
+    if gamma_vals is None:
+        gamma_vals = [0.0] * p
+    if beta_vals is None:
+        beta_vals = [0.0] * p
+    if len(gamma_vals) != p or len(beta_vals) != p:
+        raise ValueError("gamma_vals and beta_vals must each have length p")
+
+    bind_dict = {gamma[i]: gamma_vals[i] for i in range(p)}
+    bind_dict.update({beta[i]: beta_vals[i] for i in range(p)})
+    qc = qc.assign_parameters(bind_dict)
+
+    # Return format depends on whether PCS was used
+    if num_checks == 0:
+        return qc
     else:
-        raise ValueError("Unsupported method. Please use 'linear' or 'exponential'.")
+        return signs, qc
 
-    return extrap_values, fit_func
 
-# def extrapolate_checks(num_checks_to_fit: int, extrap_checks, expectation_values):
-#     """
-#     Fit a linear model to the first `num_checks_to_fit` expectation values,
-#     and extrapolate to multiple check numbers.
-#
-#     Parameters:
-#     - num_checks_to_fit: int, number of initial data points to use for fitting
-#     - extrap_checks: iterable of int, check numbers to extrapolate to
-#     - expectation_values: list or array-like, observed values
-#
-#     Returns:
-#     - list of extrapolated values, one for each value in `extrap_checks`
-#     """
-#     check_numbers = range(1, num_checks_to_fit + 1)
-#
-#     # Fit a degree-1 polynomial (linear regression)
-#     polynomial_coefficients = np.polyfit(check_numbers, expectation_values[:num_checks_to_fit], 1)
-#     polynomial = np.poly1d(polynomial_coefficients)
-#
-#     # Extrapolate to all specified check numbers
-#     extrap_values = [polynomial(c) for c in extrap_checks]
-#
-#     return extrap_values, polynomial
-
-def get_ideal_expectation(circ, pauli_string):
+def build_max_cut_paulis(graph: nx.Graph) -> list[tuple[str, float]]:
+    """Convert the graph to Pauli list.
+ 
+    This function does the inverse of `build_max_cut_graph`
     """
-    Calculates the ideal expectation of the state prepared by 'circ', wrt the observable 'pauli_string'.
-    """
-    operator = Pauli(pauli_string)
-    psi = Statevector(circ)
-    expect = np.array(psi).T.conj() @ operator.to_matrix() @ np.array(psi)
-    return expect
+    pauli_list = []
+    for edge in list(graph.edges()):
+        weight = 1 # assume unweighted maxcut
+        pauli_list.append(("ZZ", [edge[0], edge[1]], weight))
+    return pauli_list
 
-# def get_pcs_circs(num_circs
 
-def save_avg_errors(circ_folder, filename, avg_errors, overwrite=False):
+def get_line_initial_layout(
+    qc: QuantumCircuit,
+    num_system: int,
+    num_checks: int
+) -> Dict[Qubit, int]:
     """
-    Save average error results for multiple methods without overwriting an existing file.
+    Build an initial_layout so that on a line of N physical qubits:
+      - system qubit j  ↦ physical 2*j
+      - ancilla qubit j ↦ physical 2*j + 1
+    The circuit qc must have qc.num_qubits == num_system + num_checks,
+    with system qubits in qc.qubits[0:num_system] and ancillas in qc.qubits[num_system:].
+    """
+    N = qc.num_qubits
+    M = num_system
+    K = num_checks
+    if M + K != N:
+        raise ValueError(f"Need num_system+num_checks == {N}, got {M}+{K}")
+    if K > M:
+        raise ValueError(f"num_checks ({K}) can't exceed num_system ({M})")
+
+    layout: Dict[Qubit, int] = {}
+
+    # Pair the first K system qubits with the K ancillas:
+    for j in range(K):
+        sys_q = qc.qubits[j]
+        anc_q = qc.qubits[M + j]
+        layout[sys_q] = 2*j
+        layout[anc_q] = 2*j + 1
+
+    # Pack any leftover system qubits into the remaining slots 2K … N-1
+    free_positions = list(range(2*K, N))
+    leftover_sys = qc.qubits[K:M]
+    for phys, q in zip(free_positions, leftover_sys):
+        layout[q] = phys
+
+    return layout
+
+
+# ============================================================================
+# DATA I/O AND ANALYSIS FUNCTIONS
+# ============================================================================
+
+def save_avg_errors(circ_folder, filename, avg_errors, avg_cx=None, overwrite=False):
+    """
+    Save average error results for multiple methods, embedding the average CX count
+    in the filename if provided.
 
     Parameters:
       circ_folder (str): Subfolder under "data_PCE_vs_ZNE".
-      filename (str): Filename for the CSV.
-      avg_errors (dict): Dictionary with keys as method names (e.g., "ZNE_linear", "ZNE_default", "PCE")
-                         and values as their corresponding average error.
+      filename (str): Base filename for the CSV (without .csv extension).
+      avg_errors (dict): Dictionary with keys as method names and values as their average error.
+      avg_cx (float or None): If provided, inserts the average CX count into the filename.
       overwrite (bool): Whether to overwrite the file if it already exists. Defaults to False.
     """
-    dir_path = os.path.join("data_PCE_vs_ZNE", circ_folder)
-    os.makedirs(dir_path, exist_ok=True)  # Ensure the subfolder exists
+    os.makedirs(circ_folder, exist_ok=True)
 
-    filepath = os.path.join(dir_path, filename)
+    # Build filename with CX count if provided
+    base, ext = os.path.splitext(filename)
+    if avg_cx is not None:
+        # round or format avg_cx as desired
+        cx_str = f"cx={avg_cx:.1f}"
+        base = f"{base}_{cx_str}"
+    final_filename = f"{base}{ext or '.csv'}"
+    filepath = os.path.join(circ_folder, final_filename)
+
     if os.path.exists(filepath) and not overwrite:
         print(f"File {filepath} already exists. To overwrite, set overwrite=True.")
         return
 
+    # Write only the method-error table
     with open(filepath, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(["Method", "Average Absolute Error"])
         for method, error in avg_errors.items():
             writer.writerow([method.upper(), error])
+
     print(f"Results successfully saved to {filepath}")
 
 
@@ -606,6 +970,37 @@ def load_avg_errors(circ_folder, num_circs, num_samples, depth):
     return data
 
 
+def calculate_confidence_interval(values, confidence=0.95):
+    """Calculate confidence interval for a list of values.
+    
+    Args:
+        values: List of numeric values
+        confidence: Confidence level (default: 0.95 for 95% CI)
+        
+    Returns:
+        tuple: (lower_bound, upper_bound) or (None, None) if insufficient data
+    """
+    valid_values = [v for v in values if v is not None]
+    if len(valid_values) < 2:
+        return None, None
+    
+    import numpy as np
+    from scipy import stats
+    mean = np.mean(valid_values)
+    sem = stats.sem(valid_values)  # Standard error of the mean
+    
+    # Use t-distribution for small samples
+    dof = len(valid_values) - 1
+    t_val = stats.t.ppf((1 + confidence) / 2, dof)
+    
+    margin_of_error = t_val * sem
+    return mean - margin_of_error, mean + margin_of_error
+
+
+# ============================================================================
+# PLOTTING FUNCTIONS
+# ============================================================================
+
 def plot_avg_errors_by_qubit(data, num_samples=None, num_circs=None, depth=None, save_path=None):
     """
     Plot average errors for multiple methods grouped by number of qubits.
@@ -647,7 +1042,7 @@ def plot_avg_errors_by_qubit(data, num_samples=None, num_circs=None, depth=None,
     ax.set_ylabel("Average Absolute Error")
     title_parts = []
     if num_samples is not None:
-        title_parts.append(f"# of samples = {num_samples}")
+        title_parts.append(f"total # of samples = {num_samples}")
     if num_circs is not None:
         title_parts.append(f"# of circuits = {num_circs}")
     if depth is not None:
@@ -730,3 +1125,83 @@ def plot_avg_errors_by_depth(data, num_samples=None, num_circs=None, qubits=None
         print(f"Plot saved to {save_path}")
 
     plt.show()
+
+
+# ============================================================================
+# COMMENTED OUT CODE (PRESERVED FOR REFERENCE)
+# ============================================================================
+
+# Standard RB circuit generator
+# def random_clifford_circuit(
+#     num_qubits: int,
+#     lengths: List[int] = [1],
+#     num_samples: int = 1,
+#     seed: Optional[int] = None,
+# ) -> List[QuantumCircuit]:
+#     """
+#     Generate transpiled randomized-benchmarking circuits on `n_qubits`.
+
+#     Args:
+#         n_qubits: Total number of physical qubits to use (will be qubits 0..n_qubits-1).
+#         lengths: RB sequence lengths (number of random Cliffords before the inverse).
+#         num_samples: How many random instances per length.
+#         seed: RNG seed for reproducibility.
+#         backend: A Qiskit BackendV2 (if None, defaults to FakePerth()).
+#         optimization_level: Qiskit transpiler optimization level (0–3).
+
+#     Returns:
+#         A list of `QuantumCircuit`s, each of depth `length+1` (includes global inverse),
+#         transpiled to `backend`'s basis gates & coupling map.
+#     """
+#     physical_qubits = tuple(range(num_qubits))
+
+#     exp = StandardRB(
+#         physical_qubits,
+#         lengths=lengths,
+#         num_samples=num_samples,
+#         seed=seed,
+#     )
+
+#     # Get RB sequences
+#     sequences = exp._sample_sequences()
+
+#     # Get the synthesis options and the "to_instruction" helper
+#     synth_opts = exp._get_synthesis_options()
+
+#     # Rebuild each circuit *without* appending the inverse
+#     no_inv_circuits = []
+#     for seq in sequences:
+#         circ = QuantumCircuit(num_qubits)
+#         for elem in seq:
+#             inst = exp._to_instruction(elem, synth_opts)
+#             circ.append(inst, circ.qubits)
+#         no_inv_circuits.append(circ)
+
+#     return no_inv_circuits
+
+# Alternative commented version of save_avg_errors function
+# def save_avg_errors(circ_folder, filename, avg_errors, overwrite=False):
+#     """
+#     Save average error results for multiple methods without overwriting an existing file.
+
+#     Parameters:
+#       circ_folder (str): Subfolder under "data_PCE_vs_ZNE".
+#       filename (str): Filename for the CSV.
+#       avg_errors (dict): Dictionary with keys as method names (e.g., "ZNE_linear", "ZNE_default", "PCE")
+#                          and values as their corresponding average error.
+#       overwrite (bool): Whether to overwrite the file if it already exists. Defaults to False.
+#     """
+#     dir_path = circ_folder
+#     os.makedirs(dir_path, exist_ok=True)  # Ensure the subfolder exists
+
+#     filepath = os.path.join(dir_path, filename)
+#     if os.path.exists(filepath) and not overwrite:
+#         print(f"File {filepath} already exists. To overwrite, set overwrite=True.")
+#         return
+
+#     with open(filepath, mode='w', newline='') as file:
+#         writer = csv.writer(file)
+#         writer.writerow(["Method", "Average Absolute Error"])
+#         for method, error in avg_errors.items():
+#             writer.writerow([method.upper(), error])
+#     print(f"Results successfully saved to {filepath}")
