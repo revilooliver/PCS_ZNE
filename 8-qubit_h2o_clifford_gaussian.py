@@ -32,15 +32,10 @@ from utils.utils import norm_dict, total_counts
 # from utils.vqe_utils import evaluation
 
 
-# In[ ]:
-
-
 print(qiskit.version.get_version_info())
 
 
-# #### I. Calibrating $\tilde{f}$ in the noisy Clifford channel using hardware
-
-# In[ ]:
+##### I. Calibrating $\tilde{f}$ in the noisy Clifford channel using hardware
 
 
 total_trials = 10000
@@ -56,8 +51,6 @@ def calibration_circuit(Clifford):
     return qc
 
 
-# In[ ]:
-
 
 cali_C_list = []
 for i in range(total_trials):
@@ -71,51 +64,11 @@ for i in range(total_trials):
     cali_circs.append(circuit)
 
 
-# In[ ]:
-
 
 print(cali_circs[0])
 
 
 # Set noise model and topolgoy
-
-# In[ ]:
-
-"""
-homogeneous noise
-"""
-# # from qiskit_ibm_runtime import Session, Options, SamplerV2 as Sampler
-# from qiskit_ibm_runtime import Session, Sampler, Options
-# from qiskit_ibm_runtime.fake_provider import *
-# from qiskit_aer import AerSimulator
-# import qiskit_aer.noise as noise
-# from itertools import combinations
-
-# # Make a noise model
-# fake_backend = FakeCairo()
-# # noise_model = noise.NoiseModel.from_backend(fake_backend)
-
-# prob_1 = 0.002  # 1-qubit gate
-# prob_2 = 0.02   # 2-qubit gate
-
-# error_1 = noise.depolarizing_error(prob_1, 1)
-# error_2 = noise.depolarizing_error(prob_2, 2)
-
-# noise_model = noise.NoiseModel()
-# noise_model.add_all_qubit_quantum_error(error_1, ['u1', 'u2', 'u3', 'sx', 'x'])
-# noise_model.add_all_qubit_quantum_error(error_2, ['cx'])
-
-# options = Options(optimization_level=2, resilience_level=1) # choose the proper levels on hardware
-# options.simulator = {
-#     "noise_model": noise_model,
-#     "basis_gates": fake_backend.configuration().basis_gates,
-#     # "coupling_map": fake_backend.configuration().coupling_map,
-#     "seed_simulator": 42
-# }
-
-# # backend = service.get_backend("") 
-# # backend = "ibmq_qasm_simulator" # use the simulator for now
-# backend = AerSimulator()
 
 """
 gaussian noise
@@ -170,13 +123,7 @@ options.simulator = {
 backend = AerSimulator()
 
 
-# In[ ]:
-
-
 print(noise_model)
-
-
-# In[ ]:
 
 
 with Session(backend=backend) as session:
@@ -194,9 +141,6 @@ with Session(backend=backend) as session:
     session.close()
 
 
-# In[ ]:
-
-
 cali_b_lists = []
 
 for i in range(total_trials):
@@ -204,9 +148,6 @@ for i in range(total_trials):
     for key in list(result.quasi_dists[i].binary_probabilities().keys()):
         di.update({key[:num_qubits]: result.quasi_dists[i].binary_probabilities().get(key)})
     cali_b_lists.append(di)
-
-
-# In[ ]:
 
 
 def calibrating_f(cali_b_lists, cali_C_list, num_qubits):
@@ -234,8 +175,6 @@ def computing_F(b_dict, clifford, num_qubits):
 
 
 def state_reconstruction(b_str: str):
-    '''
-    '''
     zero_state = np.array([[1,0],[0,0]])
     one_state = np.array([[0,0], [0,1]])
     rho = [1]
@@ -245,16 +184,10 @@ def state_reconstruction(b_str: str):
     return rho
 
 
-# In[ ]:
-
-
 f_tilde = calibrating_f(cali_b_lists, cali_C_list, num_qubits)
 print(f'The calibrated f_tilde is {f_tilde}; while the noiseless reference is {1/(2**num_qubits+1)}')
 
 # #### II. Perform the standard shadow experiments
-
-# In[ ]:
-
 
 from qiskit.circuit import QuantumCircuit, Parameter, ParameterVector
 
@@ -322,11 +255,8 @@ def construct_qcc_circuit(entanglers: list):
 
 
 
-# In[ ]:
-
 
 # define the ansatz circuit
-
 def hf_circ(num_qubits, num_checks):
     total_qubits = num_qubits + num_checks
     hf_circuit = QuantumCircuit(total_qubits)
@@ -414,9 +344,6 @@ def hydrogen_shadow_PCS_circuit(Clifford, num_qubits, num_checks):
     return sign_list, qc
 
 
-# In[ ]:
-
-
 num_qubits = 8
 num_checks = 4
 C_list = []
@@ -443,13 +370,8 @@ for i in range(total_trials):
     orign_circs.append(circuit)
 
 
-# In[ ]:
-
 
 circs_list[0][-1].draw()
-
-
-# In[ ]:
 
 
 # import pickle
@@ -463,10 +385,6 @@ circs_list[0][-1].draw()
     
     
 
-
-# In[ ]:
-
-
 # import pickle
 
 # with open('circs_list.pkl', 'rb') as f:
@@ -476,19 +394,11 @@ circs_list[0][-1].draw()
 #     orign_circs = pickle.load(f)
 
 
-# In[ ]:
-
 
 print(circs_list[0][-2])
 
 
-# In[ ]:
-
-
 print(orign_circs[0])
-
-
-# In[ ]:
 
 
 def filter_results_reindex(dictionary, qubits, indexes, sign_list):
@@ -510,15 +420,7 @@ def filter_results_reindex(dictionary, qubits, indexes, sign_list):
     return new_dict
 
 
-# In[ ]:
-
-
 num_qubits = 8
-
-
-# In[ ]:
-
-
 b_lists_filtered = []
 check_id = 1
 # Submit hardware jobs via Qiskit Runtime;
@@ -555,8 +457,6 @@ for i in range(total_trials):
     filtered_b_lists.append(filted_dist)
 b_lists_filtered.append(filtered_b_lists)
 
-
-# In[ ]:
 
 
 check_id = 2
@@ -595,8 +495,6 @@ for i in range(total_trials):
 b_lists_filtered.append(filtered_b_lists)
 
 
-# In[ ]:
-
 
 check_id = 3
 # Submit hardware jobs via Qiskit Runtime;
@@ -632,9 +530,6 @@ for i in range(total_trials):
     print(total_counts(filted_dist))
     filtered_b_lists.append(filted_dist)
 b_lists_filtered.append(filtered_b_lists)
-
-
-# In[ ]:
 
 
 check_id = 4
@@ -673,11 +568,8 @@ for i in range(total_trials):
 b_lists_filtered.append(filtered_b_lists)
 
 
-# In[ ]:
-
 
 # Submit hardware jobs via Qiskit Runtime;
-
 with Session(backend=backend) as session:
     sampler = Sampler(session=session, options=options)
     
@@ -702,17 +594,10 @@ for i in range(total_trials):
 
 
 # Noiseless Experiments on qiskitruntime
-
-# In[ ]:
-
-
 from qiskit_ibm_runtime import QiskitRuntimeService, Session, Sampler, Options
 
 options = Options(optimization_level=2, resilience_level=1)
 # backend = service.get_backend("ibmq_qasm_simulator")
-
-
-# In[ ]:
 
 
 with Session(backend=backend) as session:
@@ -728,8 +613,6 @@ with Session(backend=backend) as session:
     # and you don't need to run more in the session.
     session.close()
 
-
-# In[ ]:
 
 
 import math
@@ -750,8 +633,6 @@ def filter_results(dictionary, qubits, indexes, sign_list):
     return new_dict
 
 
-# In[ ]:
-
 
 b_lists_noiseless = []
 
@@ -761,8 +642,6 @@ for i in range(total_trials):
         di.update({key[:num_qubits]: result.quasi_dists[i].binary_probabilities().get(key)})
     b_lists_noiseless.append(di)
 
-
-# In[ ]:
 
 
 def compute_expectation(b_lists, b_lists_checks, b_lists_noiseless, C_list, operator_list, num_qubits, f_tilde):
@@ -881,8 +760,6 @@ def expectation_snapshot_noiseless(b_dict, clifford, operator_list, num_qubits):
     return snapshot_list / denom
 
 
-# In[ ]:
-
 
 # run the classical shadows postprocessing to get expectation values;
 
@@ -901,8 +778,6 @@ for operator in operator_list:
     expect = np.array(psi).T.conj() @ operator.to_matrix() @ np.array(psi)
     ref_list.append(expect)
 
-
-# In[ ]:
 
 
 num_of_runs = 20
@@ -949,8 +824,6 @@ for j, num_snapshots in enumerate(shadow_range):
         expectation_shadow_noiseless[j, :, i] = np.real(expectation_list_noiseless)
 
 
-# In[ ]:
-
 
 # # num_of_runs = 10
 # num_of_runs = 10
@@ -993,15 +866,10 @@ for j, num_snapshots in enumerate(shadow_range):
 #         expectation_shadow_noiseless[j, :, i] = np.real(expectation_list_noiseless)
 
 
-# In[ ]:
-
-
 print(ref_list)
 
 
 # #### Calculate extrapolated checks
-
-# In[ ]:
 
 
 from numpy.polynomial.polynomial import Polynomial
@@ -1020,20 +888,11 @@ for layer_index, layer in enumerate(extrapolation_layers):
             extrapolated_value = polynomial(layer) # Extrapolate the value for the current layer
             expectation_check_limit[layer_index, shadow_size_index, pauli_index] = extrapolated_value
 
-
-# In[ ]:
-
-
 print(expectation_check_limit.shape)
-
-
-# In[ ]:
 
 
 print(ref_list)
 
-
-# In[ ]:
 
 
 error = np.zeros(len(shadow_range))
@@ -1056,8 +915,6 @@ for i in range(len(shadow_range)):
     error_noiseless[i] = np.mean([np.abs(np.median(expectation_shadow_noiseless[i], axis=1)[j] - ref_list[j]) for j in range(len(ref_list))])
 
 
-# In[ ]:
-
 
 error_check_limit = np.zeros((len(extrapolation_layers), len(shadow_range)))
 
@@ -1069,31 +926,17 @@ for layer_index, layer in enumerate(extrapolation_layers):
         )
 
 
-# In[ ]:
-
-
 print(error_check_limit)
-
-
-# In[ ]:
 
 
 print(error)
 
 
-# In[ ]:
-
-
 print(error_check1)
 
 
-# In[ ]:
-
 
 print(error_check3)
-
-
-# In[ ]:
 
 
 plt.figure(figsize=(5, 4), dpi=100)
@@ -1124,8 +967,6 @@ plt.savefig('8-qubit_h2o_clifford_gaussian_noise.png', dpi=100, bbox_inches="tig
 plt.show()
 
 
-# In[ ]:
-
 
 plt.figure(figsize=(5, 4), dpi=100)
 plt.plot(shadow_range, error, '--o', ms=8, color='tab:blue', label='Robust Shadow')
@@ -1139,13 +980,9 @@ plt.tight_layout()
 plt.show()
 
 
-# In[ ]:
 
 
 
-
-
-# In[ ]:
 
 
 
